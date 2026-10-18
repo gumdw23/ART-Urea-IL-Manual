@@ -134,8 +134,8 @@
     $(relationLabel, "span", "", "Structure links");
 
     const resetBtn = $(toolbar, "button", "uil-view-btn", "Reset layout");
-    const printBtn = $(toolbar, "button", "uil-view-btn uil-vector-pdf-btn", "Vector PDF…");
-    printBtn.title = "브라우저 인쇄에서 Save as PDF를 선택하면 SVG 선/구조가 벡터로 유지됩니다.";
+    const printBtn = $(toolbar, "button", "uil-view-btn uil-vector-pdf-btn", "Vector PDF · A3");
+    printBtn.title = "현재 Manual map만 A3 landscape 한 장에 맞춰 벡터 PDF로 인쇄합니다.";
     $(toolbar, "span", "uil-public-note", "read-only · drag / zoom / highlight enabled");
 
     const shell = $(root, "div", "uil-mindmap-shell");
@@ -273,7 +273,8 @@
       mm.layoutFrozen = !mm.layoutFrozen;
       updateLayoutButton(mm);
       if (mm.layoutFrozen) stopAnimation();
-      else startForceLayout(nodes, cards, lib, mm, svg, stageWidth, stageHeight);
+      else startForceLayout(nodes, cards, lib, mm, svg, stageWidth, stageHeight,
+        () => fitView(shell, nodes, mm, applyCamera));
     };
 
     resetBtn.onclick = () => {
@@ -283,7 +284,7 @@
       mm.layoutFrozen = false;
       render();
     };
-    printBtn.onclick = () => window.print();
+    printBtn.onclick = () => prepareVectorPrint(stage, nodes, mm, lib);
 
     shell.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -314,7 +315,13 @@
       applyZoom(mm.zoom + (e.deltaY < 0 ? 0.1 : -0.1), ax, ay);
     }, { passive: false });
 
-    if (!mm.layoutFrozen) startForceLayout(nodes, cards, lib, mm, svg, stageWidth, stageHeight);
+    if (!mm.layoutFrozen) {
+      startForceLayout(nodes, cards, lib, mm, svg, stageWidth, stageHeight,
+        () => fitView(shell, nodes, mm, applyCamera));
+      requestAnimationFrame(() => fitView(shell, nodes, mm, applyCamera));
+    } else {
+      requestAnimationFrame(() => fitView(shell, nodes, mm, applyCamera));
+    }
   }
 
   function updateLayoutButton(mm) {
@@ -538,6 +545,62 @@
     (lib.mindmap.edges || []).forEach(e => addLine(e.from, e.to, "manual"));
   }
 
+  function getNodeBounds(nodes, margin = 0) {
+    const list = [...nodes.values()];
+    if (!list.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    list.forEach(n => {
+      minX = Math.min(minX, n.pos.x);
+      minY = Math.min(minY, n.pos.y);
+      maxX = Math.max(maxX, n.pos.x + n.w);
+      maxY = Math.max(maxY, n.pos.y + n.h);
+    });
+    return {
+      minX: minX - margin,
+      minY: minY - margin,
+      maxX: maxX + margin,
+      maxY: maxY + margin,
+      width: Math.max(1, maxX - minX + margin * 2),
+      height: Math.max(1, maxY - minY + margin * 2),
+    };
+  }
+
+  function prepareVectorPrint(stage, nodes, mm, lib) {
+    const bounds = getNodeBounds(nodes, 55);
+    if (!bounds) return;
+    document.querySelector(".uil-vector-print-root")?.remove();
+
+    const root = $(document.body, "div", "uil-vector-print-root");
+    const header = $(root, "div", "uil-vector-print-header");
+    $(header, "div", "uil-vector-print-title", `ART Urea IL Visual Library · ${modeLabel()} Manual Map`);
+    const stateText = mm.layoutFrozen ? "Frozen layout" : "Auto-layout snapshot";
+    $(header, "div", "uil-vector-print-meta",
+      `${stateText} · Structure links ${mm.showRelationEdges === false ? "OFF" : "ON"} · Blue = actual synthesis · Purple = manual link · VECTOR PDF`);
+
+    const map = $(root, "div", "uil-vector-print-map");
+    const scaler = $(map, "div", "uil-vector-print-scaler");
+    const clone = stage.cloneNode(true);
+    clone.classList.add("uil-vector-print-stage");
+    clone.querySelectorAll(".flipped").forEach(x => x.classList.remove("flipped"));
+    clone.querySelectorAll(".uil-focus-source,.uil-focus-match,.uil-focus-dim")
+      .forEach(x => x.classList.remove("uil-focus-source", "uil-focus-match", "uil-focus-dim"));
+    clone.style.transform = `translate(${-bounds.minX}px,${-bounds.minY}px)`;
+    clone.style.transformOrigin = "0 0";
+
+    const pageWpx = 1527, pageHpx = 1005;
+    const scale = Math.min(pageWpx / bounds.width, pageHpx / bounds.height);
+    const scaledW = bounds.width * scale, scaledH = bounds.height * scale;
+    scaler.style.width = `${bounds.width}px`;
+    scaler.style.height = `${bounds.height}px`;
+    scaler.style.left = `${(pageWpx - scaledW) / 2}px`;
+    scaler.style.top = `${(pageHpx - scaledH) / 2}px`;
+    scaler.style.transform = `scale(${scale})`;
+    scaler.appendChild(clone);
+
+    window.addEventListener("afterprint", () => root.remove(), { once: true });
+    requestAnimationFrame(() => setTimeout(() => window.print(), 120));
+  }
+
   function fitView(shell, nodes, mm, applyCamera) {
     const list = [...nodes.values()];
     if (!list.length) return;
@@ -561,7 +624,7 @@
     applyCamera();
   }
 
-  function startForceLayout(nodes, cards, lib, mm, svg, stageWidth, stageHeight) {
+  function startForceLayout(nodes, cards, lib, mm, svg, stageWidth, stageHeight, onSettled = null) {
     stopAnimation();
     const cores = lib.cores || [];
     const tails = state.data.tails || [];
@@ -571,12 +634,13 @@
       if (n) targets.set(n.id, { x: 360 + ti * 315, y: 110 + (ti % 2) * 105 });
     });
 
-    const clusterXGap = 1650;
-    const clusterYGap = state.mode === "single" ? 1550 : 1450;
+    const clusterCols = state.mode === "single" ? 4 : (state.mode === "double" ? 3 : 1);
+    const clusterXGap = 1120;
+    const clusterYGap = 980;
     const firstY = 650;
     cores.forEach((core, ci) => {
-      const col = ci % 2;
-      const row = Math.floor(ci / 2);
+      const col = ci % clusterCols;
+      const row = Math.floor(ci / clusterCols);
       const ox = 150 + col * clusterXGap;
       const oy = firstY + row * clusterYGap;
       const iid = core.intermediateId || core.code;
@@ -595,9 +659,9 @@
       if (!targets.has(n.id)) targets.set(n.id, { x: n.pos.x, y: n.pos.y });
     });
 
-    const firstRun = mm.layoutVersion !== 6;
+    const firstRun = mm.layoutVersion !== 7;
     if (firstRun) {
-      mm.layoutVersion = 6;
+      mm.layoutVersion = 7;
       [...nodes.values()].forEach((n, i) => {
         const t = targets.get(n.id);
         n.pos.x = Math.max(40, Math.min(stageWidth - n.w - 40, t.x + (((i * 37) % 80) - 40)));
@@ -641,6 +705,7 @@
         });
         drawEdges(svg, cards, lib, nodes);
         state.animation = null;
+        if (typeof onSettled === "function") onSettled();
       }
     };
     state.animation = requestAnimationFrame(step);
