@@ -14,6 +14,8 @@
   "scripts": {
     "quartz": "./quartz/bootstrap-cli.mjs",
     "docs": "npx quartz build --serve -d docs",
+    "sync:urea": "python scripts/sync-urea-data.py",
+    "build:urea": "npx quartz build && node scripts/postbuild-manual.mjs",
     "check": "tsc --noEmit && npx prettier . --check",
     "format": "npx prettier . --write",
     "test": "tsx --test",
