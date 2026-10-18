@@ -24,7 +24,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git add failed' }
 
 $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
 $message = "Publish UREA Manual data $stamp"
-git commit --only -- manual-site/manual-data.json -m $message
+git commit -m $message --only -- manual-site/manual-data.json
 if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
 Write-Output 'STEP push'
 git push origin main
